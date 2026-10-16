@@ -1,0 +1,49 @@
+rules_version = '2';
+// Reglas de seguridad de Mis finanzas (v6). Pégalas en Firebase > Firestore > Rules y toca Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function hogar(hid) { return get(/databases/$(database)/documents/hogares/$(hid)).data; }
+
+    // Perfil de cada usuario (a qué hogar pertenece y su nombre): solo él.
+    match /users/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    // Códigos para invitar: quien conoce el código puede leerlo (no listarlos).
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow list, update: if false;
+      allow create: if signedIn() && request.auth.uid in hogar(request.resource.data.hid).members;
+      allow delete: if signedIn() && request.auth.uid in hogar(resource.data.hid).members;
+    }
+
+    match /hogares/{hid} {
+      function isMember() { return signedIn() && request.auth.uid in resource.data.members; }
+      // Unirse: agregarse a sí mismo (máximo 6 personas) demostrando que conoce el código actual.
+      function joining() {
+        let keys = request.resource.data.diff(resource.data).affectedKeys();
+        let newM = request.resource.data.members;
+        let oldM = resource.data.members;
+        return signedIn()
+          && newM.hasAll(oldM) && newM.size() == oldM.size() + 1
+          && request.auth.uid in newM && newM.size() <= 6
+          && (
+            ('joinCode' in resource.data
+              && keys.hasOnly(['members', 'joinWith'])
+              && request.resource.data.joinWith == resource.data.joinCode + ':' + request.auth.uid)
+            || (!('joinCode' in resource.data) && keys.hasOnly(['members']))
+          );
+      }
+      allow create: if signedIn() && request.resource.data.members == [request.auth.uid];
+      allow read: if isMember();
+      allow update: if isMember() || joining();
+      allow delete: if false;
+
+      // Datos del hogar: solo los miembros.
+      match /items/{id} {
+        allow read, write: if signedIn() && request.auth.uid in hogar(hid).members;
+      }
+    }
+  }
+}
