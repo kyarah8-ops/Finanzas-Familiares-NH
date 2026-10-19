@@ -1,5 +1,5 @@
 'use strict';
-(window.__V = window.__V || {})['plan.js'] = '8.0.1';
+(window.__V = window.__V || {})['plan.js'] = '10.1.0';
 /* Mis finanzas — Planificar: te alcanza, saldo proyectado, comparación con tu promedio,
    calendario de pagos y recordatorios para el calendario del teléfono. */
 let planDays = 30, planDaily = true, calYm = today().slice(0, 7), calDay = '';
@@ -15,7 +15,7 @@ function alcanzaCard(full) {
   return `<div class="card"><h2><i class="icon-wallet"></i> ${ok ? 'Te alcanza' : 'No te alcanza'} ${hasta}</h2>
 <div class="big2 num ${ok ? '' : 'out'}">${money(Math.abs(s.left))}</div>
 <small class="mut">${ok ? `puedes gastar · ~${money(s.perDay)} por día durante ${nDias(s.days)}` : 'te faltan para cubrir lo que viene'}</small>
-<p class="mini" style="margin:8px 0 0">Libre hoy ${money(s.free)} − por pagar ${money(s.committed)}${s.items.length ? ` (${s.items.length})` : ''}${s.income ? ` · antes de “${esc(s.income.r.name)}”` : ''}.</p>
+${full ? `<p class="mini" style="margin:8px 0 0">Libre hoy ${money(s.free)} − por pagar ${money(s.committed)}${s.items.length ? ` (${s.items.length})` : ''}${s.income ? ` · antes de “${esc(s.income.r.name)}”` : ''}.</p>` : s.committed ? `<p class="mini" style="margin:6px 0 0">Ya descontados ${money(s.committed)} por pagar (${s.items.length}).</p>` : ''}
 ${!s.income ? `<p class="mini" style="margin:4px 0 0">Agrega tu salario en <button class="link" style="display:inline;padding:0;min-height:0" onclick="go('rec')">Recurrentes</button> para que el cálculo llegue hasta tu próximo cobro.</p>` : ''}
 ${full ? (rows ? `<div style="margin-top:8px">${rows}</div>` : '<p class="mini">No hay pagos pendientes antes de esa fecha.</p>') + `<p class="mini" style="margin:8px 0 0">“Libre” es lo que tienes en tus cuentas en pesos (sin tarjetas) menos lo apartado para metas. “Por pagar” son tus recurrentes de gasto, aportes a metas y pagos de tarjeta que vencen antes de esa fecha.</p>`
       : `<button class="link" onclick="go('plan')">Ver detalle</button>`}</div>`;
@@ -25,17 +25,16 @@ ${full ? (rows ? `<div style="margin-top:8px">${rows}</div>` : '<p class="mini">
 const markBar = (pct, col, mark) => `<div class="bar mk"><div style="width:${Math.max(0, Math.min(100, pct))}%;background:${col}"></div>${mark != null ? `<i style="left:${Math.max(0, Math.min(100, mark))}%"></i>` : ''}</div>`;
 function promedioCard() {
   const cc = catCompare(today().slice(0, 7)); if (!cc) return '';
-  const ahead = r => r.v - r.avg * cc.frac;
+  const ahead = r => r.v - r.exp;
   const hot = cc.rows.filter(r => r.avg > 0 && r.pace > 1.15 && ahead(r) > Math.max(300, r.avg * 0.1)).sort((a, b) => ahead(b) - ahead(a)).slice(0, 3);
-  const tp = cc.avgTot ? cc.vTot / (cc.avgTot * cc.frac) : null;
+  const tp = cc.expTot ? cc.vTot / cc.expTot : null;
   const tag = tp == null ? '' : tp > 1.1 ? pill('vas más rápido', 'warn') : tp < 0.9 ? pill('vas por debajo', 'in') : pill('vas a tu ritmo');
   return `<div class="card"><h2><i class="icon-gauge"></i> Comparado con tu promedio</h2>
-<p class="mini" style="margin:0 0 8px">Este mes llevas <b>${money(cc.vTot)}</b>; tu promedio es ${money(cc.avgTot)} al mes (últimos ${cc.months == 1 ? 'mes' : cc.months + ' meses'}). ${tag}</p>
+<p class="mini" style="margin:0 0 6px">Llevas <b>${money(cc.vTot)}</b> · promedio ${money(cc.avgTot)}/mes ${tag}</p>
 ${hot.length ? hot.map(r => `<div class="row" style="flex-wrap:wrap">${circ(r.c, icoFor(r.c, 'e'))}<div><b>${esc(r.c)}</b><small>${money(r.v)} · promedio ${money(r.avg)}/mes</small></div><b class="num warn">${r.pct > 0 ? '+' : ''}${r.pct}%</b>
-<div style="flex-basis:100%;padding-left:54px">${markBar(r.v / r.avg * 100, r.v > r.avg ? 'var(--out)' : 'var(--yellow)', cc.frac * 100)}</div></div>`).join('')
+<div style="flex-basis:100%;padding-left:54px">${markBar(r.v / r.avg * 100, r.v > r.avg ? 'var(--out)' : 'var(--yellow)', r.exp / r.avg * 100)}</div></div>`).join('')
       : '<p class="mut" style="margin:0">Ninguna categoría va por encima de su ritmo normal. 👍</p>'}
-<p class="mini" style="margin:6px 0 0">La rayita marca dónde deberías ir hoy si gastaras igual que tu promedio.</p>
-<button class="link" onclick="go('rep')">Ver todas las categorías</button></div>`;
+<button class="link" onclick="repTab='cat';go('rep')">Ver todas las categorías</button></div>`;
 }
 // Tabla completa para Reportes
 function compareTable(ym) {
@@ -43,12 +42,12 @@ function compareTable(ym) {
   if (!cc) return `<div class="card"><h2>Comparado con tu promedio</h2><p class="empty">Hace falta al menos un mes anterior con movimientos.</p></div>`;
   const isCur = ym == today().slice(0, 7);
   return `<div class="card"><h2>Comparado con tu promedio (${cc.months == 1 ? 'mes anterior' : cc.months + ' meses anteriores'})</h2>
-${isCur ? `<p class="mini" style="margin:0 0 6px">El mes va por el día ${+today().slice(8, 10)}: la rayita marca dónde irías gastando como tu promedio.</p>` : ''}
+${isCur ? `<p class="mini" style="margin:0 0 6px">El mes va por el día ${+today().slice(8, 10)}: la rayita marca lo que sueles llevar gastado a esta altura del mes.</p>` : ''}
 ${cc.rows.filter(r => r.v || r.avg).map(r => {
     const col = !r.avg ? 'var(--brand)' : r.v > r.avg ? 'var(--out)' : r.pace > 1.15 ? 'var(--yellow)' : 'var(--in)';
     const d = r.pct == null ? pill('nuevo') : `<b class="num ${r.pct > 0 ? 'out' : 'in'}">${r.pct > 0 ? '+' : ''}${r.pct}%</b>`;
     return `<div class="row" style="flex-wrap:wrap">${circ(r.c, icoFor(r.c, 'e'))}<div><b>${esc(r.c)}</b><small>${money(r.v)} · promedio ${money(r.avg)}</small></div>${d}
-<div style="flex-basis:100%;padding-left:54px">${markBar(r.avg ? r.v / r.avg * 100 : 100, col, isCur && r.avg ? cc.frac * 100 : null)}</div></div>`;
+<div style="flex-basis:100%;padding-left:54px">${markBar(r.avg ? r.v / r.avg * 100 : 100, col, isCur && r.avg ? r.exp / r.avg * 100 : null)}</div></div>`;
   }).join('')}</div>`;
 }
 
@@ -76,12 +75,13 @@ function drawProjection() {
 }
 
 // ============ Calendario de pagos ============
-const CAL_COL = { i: 'var(--in)', e: 'var(--out)', g: 'var(--brand)', tr: 'var(--blue)', pay: 'var(--warn)', cut: 'var(--mut)' };
+const CAL_COL = { i: 'var(--in)', e: 'var(--out)', g: 'var(--brand)', tr: 'var(--blue)', pay: 'var(--warn)', cut: 'var(--mut)', loan: 'var(--purple)', debt: 'var(--pink)' };
 const CAL_ST = { done: ['Hecho', 'in'], late: ['Pendiente', 'warn'], next: ['', ''] };
 function calRow(e) {
   const st = e.k == 'cut' ? ['Corte', ''] : CAL_ST[e.st] || ['', ''];
-  const amt = e.v != null && e.v > 0 ? `<b class="num ${e.k == 'i' ? 'in' : e.k == 'cut' ? '' : 'out'}">${e.k == 'i' ? '+' : '−'}${money(e.v, e.cu)}</b>` : '';
-  const act = e.st == 'late' && e.rec ? `<button class="p" onclick="confirmRec('${e.rec}','${e.d}')">Confirmar</button>` : e.k == 'pay' && e.st != 'done' && e.v > 0 ? `<button onclick="openTransferForm(null,'${e.acc}',${e.v})">Pagar</button>` : '';
+  const inflow = e.k == 'i' || (e.k == 'debt' && e.dir == 'owed');
+  const amt = e.v != null && e.v > 0 ? `<b class="num ${inflow ? 'in' : e.k == 'cut' ? '' : 'out'}">${inflow ? '+' : '−'}${money(e.v, e.cu)}</b>` : '';
+  const act = e.st == 'late' && e.rec ? `<button class="p" onclick="confirmRec('${e.rec}','${e.d}')">Confirmar</button>` : e.k == 'pay' && e.st != 'done' && e.v > 0 ? `<button onclick="openTransferForm(null,'${e.acc}',${e.v})">Pagar</button>` : e.k == 'loan' && e.st != 'done' ? `<button onclick="openLoanPay('${e.loan}')">Pagar</button>` : e.k == 'debt' && e.st != 'done' ? `<button onclick="openDebtPay('${e.debt}')">${e.dir == 'owe' ? 'Pagar' : 'Cobrar'}</button>` : '';
   return `<div class="row">${circ(e.name, e.icon || 'calendar')}<div><b>${esc(e.name)}</b><small>${fday(e.d)}${st[0] ? ' ' + pill(st[0], st[1]) : ''}</small></div>${amt}${act}</div>`;
 }
 function calendarCard() {
@@ -96,13 +96,13 @@ function calendarCard() {
     const late = list.some(e => e.st == 'late');
     cells += `<button type="button" class="cd${d == td ? ' today' : ''}${d == calDay ? ' sel' : ''}${late ? ' late' : ''}" data-d="${d}" onclick="calPick(this.dataset.d)" aria-label="${fday(d)}${list.length ? ', ' + list.length + ' pagos' : ''}"><span>${k}</span><b>${dots}</b></button>`;
   }
-  const out = ev.filter(e => e.k == 'e' || e.k == 'pay').reduce((s, e) => s + (e.v > 0 ? convert(e.v, e.cu || 'DOP', 'DOP', e.d) : 0), 0);
+  const out = ev.filter(e => e.k == 'e' || e.k == 'pay' || e.k == 'loan').reduce((s, e) => s + (e.v > 0 ? convert(e.v, e.cu || 'DOP', 'DOP', e.d) : 0), 0);
   const inc = ev.filter(e => e.k == 'i').reduce((s, e) => s + convert(e.v, e.cu || 'DOP', 'DOP', e.d), 0);
   return `<div class="card"><h2><i class="icon-calendar-days"></i> Calendario de pagos</h2>
 <div class="add" style="align-items:center;margin-bottom:8px"><button class="iconbtn" aria-label="Mes anterior" onclick="calYm=addMonths(calYm,-1);render()"><i class="icon-chevron-left"></i></button>
 <b style="flex:1;text-align:center;text-transform:capitalize">${ymLabel(calYm)}</b><button class="iconbtn" aria-label="Mes siguiente" onclick="calYm=addMonths(calYm,1);render()"><i class="icon-chevron-right"></i></button></div>
 <div class="cal"><small>L</small><small>M</small><small>M</small><small>J</small><small>V</small><small>S</small><small>D</small>${cells}</div>
-<div class="legend">${[['i', 'Ingreso'], ['e', 'Factura'], ['g', 'Meta'], ['tr', 'Transferencia'], ['pay', 'Tarjeta'], ['cut', 'Corte']].map(([k, l]) => `<span><i style="background:${CAL_COL[k]}"></i>${l}</span>`).join('')}</div>
+<div class="legend">${[['i', 'Ingreso'], ['e', 'Factura'], ['g', 'Meta'], ['tr', 'Transferencia'], ['pay', 'Tarjeta'], ['loan', 'Préstamo'], ['debt', 'Deuda'], ['cut', 'Corte']].map(([k, l]) => `<span><i style="background:${CAL_COL[k]}"></i>${l}</span>`).join('')}</div>
 <div id="calsel">${calSelHTML(by)}</div>
 <p class="mini" style="margin:8px 0 0">En el mes: ingresos programados ${money(inc)} · pagos ${money(out)}.</p></div>`;
 }
@@ -121,6 +121,7 @@ const icsEsc = s => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replac
 const icsDate = iso => iso.replace(/-/g, '');
 // Las líneas de un .ics no deben pasar de 75 bytes: se cortan y siguen con un espacio
 function icsFold(line) {
+  if (line.length * 3 <= 74) return line; // corta segura: aunque cada letra ocupe 3 bytes, cabe
   const enc = new TextEncoder(), out = []; let cur = '';
   for (const ch2 of line) { if (enc.encode(cur + ch2).length > (out.length ? 74 : 75)) { out.push(cur); cur = ''; } cur += ch2; }
   out.push(cur); return out.join('\r\n ');
@@ -152,9 +153,18 @@ function buildIcs(opt) {
     const d = nextDayAfter(+a.payDay, addDays(td, -1)); if (!d) return;
     add('tarjeta-' + a.id, d, 'FREQ=MONTHLY;' + byMonthDay(a.payDay), `Pagar tarjeta ${a.name}`, `Fecha límite de pago${a.cutDay ? ' (corte el día ' + a.cutDay + ')' : ''}. En la app, Cuentas → ${a.name} → Pagar te dice cuánto.`);
   });
+  accs.filter(a => isLoan(a) && a.payDay >= 1 && loanOwed(a) > 0.004).forEach(a => {
+    const d = nextDayAfter(+a.payDay, addDays(td, -1)); if (!d) return;
+    add('prestamo-' + a.id, d, 'FREQ=MONTHLY;' + byMonthDay(a.payDay), `Cuota: ${a.name}${opt.amounts && a.payment ? ' · ' + money(a.payment, a.currency) : ''}`, `Cuota del préstamo${a.lender ? ' con ' + a.lender : ''}. En la app: Más → Deudas → Pagar cuota.`);
+  });
+  debts.filter(x => x.status == 'open' && x.due && x.due >= td).forEach(x => {
+    const L = ['BEGIN:VEVENT', 'UID:deuda-' + x.id + '@mis-finanzas', 'DTSTAMP:' + stamp, 'DTSTART;VALUE=DATE:' + icsDate(x.due), 'DTEND;VALUE=DATE:' + icsDate(addDay(x.due)), 'SUMMARY:' + icsEsc((x.dir == 'owe' ? 'Pagarle a ' : 'Cobrarle a ') + x.who + (opt.amounts ? ' · ' + money(debtLeft(x), x.cu) : '')), 'DESCRIPTION:' + icsEsc('Fecha límite de la deuda. En la app: Más → Deudas → Personas.'), 'TRANSP:TRANSPARENT'];
+    if (alarm) L.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsEsc('Deuda con ' + x.who), 'TRIGGER:' + alarm, 'END:VALARM');
+    L.push('END:VEVENT'); ev.push(...L);
+  });
   const n = ev.filter(l => l == 'BEGIN:VEVENT').length;
-  const text = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Mis finanzas//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Finanzas', ...ev, 'END:VCALENDAR'].map(icsFold).join('\r\n') + '\r\n';
-  return { text, n };
+  // el texto se arma solo cuando se pide (para contar no hace falta)
+  return { n, get text() { return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Mis finanzas//ES', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:Finanzas', ...ev, 'END:VCALENDAR'].map(icsFold).join('\r\n') + '\r\n'; } };
 }
 let icsOpt = { amounts: false, when: '1' };
 function remindersCard() {

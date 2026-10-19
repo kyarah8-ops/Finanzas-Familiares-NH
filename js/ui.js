@@ -1,5 +1,5 @@
 'use strict';
-(window.__V = window.__V || {})['ui.js'] = '8.0.1';
+(window.__V = window.__V || {})['ui.js'] = '10.1.0';
 /* Mis finanzas — utilidades de interfaz, acciones (guardar/borrar) y navegación. */
 const dlg = document.getElementById('dlg');
 const $ = id => document.getElementById(id);
@@ -27,8 +27,8 @@ function ask(msg, { ok = 'Aceptar', cancel = 'Cancelar', danger = false, title =
     d.innerHTML = `<form method="dialog">${title ? `<h2>${esc(title)}</h2>` : ''}<p>${esc(msg).replace(/\n/g, '<br>')}</p>
 <div class="seg"><button value="0">${esc(cancel)}</button><button value="1" class="${danger ? 'danger fill' : 'p'}">${esc(ok)}</button></div></form>`;
     d.returnValue = '';
-    d.onclose = () => res(d.returnValue == '1');
-    d.showModal();
+    d.onclose = () => { if (history.state && history.state.ask) { ignorePop++; history.back(); } res(d.returnValue == '1'); };
+    d.showModal(); history.pushState({ ...(history.state || {}), ask: 1 }, ''); // el botón Atrás del teléfono la cierra
   });
 }
 
@@ -92,8 +92,8 @@ function saveGoal(g) {
   goals = goals.filter(x => x.id != id).concat(obj); local(); cloudPut('goal', obj); render();
 }
 function removeItem(kind, id) {
-  const key = { acc: 'accs', adj: 'adjs', rec: 'recs', goal: 'goals' }[kind];
-  const list = { accs, adjs, recs, goals }[key], it = list.find(x => x.id == id), ts = now();
+  const key = KIND_KEY[kind];
+  const list = listOf(key), it = list.find(x => x.id == id), ts = now();
   assign(key, list.filter(x => x.id != id));
   dels[id] = ts; if (it) { bin = bin.filter(x => x.id != id).concat({ k: kind, id, del: ts, d: deep(it) }); cloudDel(kind, it, ts); }
   local();
@@ -103,7 +103,7 @@ function restoreItem(id) {
   const t = trash.find(x => x.id == id);
   if (t) { restoreTx(id); toast('Restaurado', { kind: 'ok' }); return; }
   const b = bin.find(x => x.id == id); if (!b) return;
-  const key = { acc: 'accs', adj: 'adjs', rec: 'recs', goal: 'goals' }[b.k], list = { accs, adjs, recs, goals }[key];
+  const key = KIND_KEY[b.k], list = listOf(key);
   const obj = (cleanState({ [key]: [{ ...b.d, id, u: now() }] })[key] || [])[0]; if (!obj) return fail('No se pudo restaurar.');
   assign(key, list.filter(x => x.id != id).concat(obj)); bin = bin.filter(x => x.id != id); delete dels[id];
   local(); cloudPut(b.k, obj); render(); toast('Restaurado', { kind: 'ok' });
@@ -113,13 +113,13 @@ async function resetAll() {
   if (!(await ask(shared ? 'Se borra TODO en la nube y en todos los teléfonos del hogar: cuentas, movimientos, metas, recurrentes y presupuesto.' : 'Se borra TODO en este teléfono: cuentas, movimientos, metas, recurrentes, presupuesto y categorías.', { title: '¿Borrar todos los datos?', ok: 'Sí, borrar', danger: true }))) return;
   if (!(await ask('No se puede deshacer, salvo importando un respaldo. ¿Ya descargaste uno?', { title: 'Última confirmación', ok: 'Borrar todo', danger: true }))) return;
   if (shared) window.Cloud.wipeAll(getAllItems());
-  setState({ cfg: fresh(), cfgT: now(), txs: [], accs: [], adjs: [], recs: [], goals: [], dels: {}, trash: [], bin: [] });
+  setState({ cfg: fresh(), cfgT: now(), txs: [], accs: [], adjs: [], recs: [], goals: [], dels: {}, trash: [], bin: [], debts: [], assets: [] });
   F = {}; local(); if (shared) cloudCfg(); go('home'); toast('Datos borrados');
 }
 
 // ============ navegación ============
-const NAV = ['home', 'hist', 'acc', 'bud', 'more'];
-const UNDER_MORE = ['more', 'rep', 'rec', 'goal', 'set', 'shared', 'plan', 'trash'];
+const NAV = ['home', 'hist', 'acc', 'more'];
+const UNDER_MORE = ['more', 'bud', 'rep', 'rec', 'goal', 'set', 'shared', 'plan', 'trash', 'debts', 'tools'];
 function go(t) { tab = t; if (dlg.open) dlg.close(); render(); scrollTo(0, 0); }
 function pre(k) {
   const n = new Date(), y = n.getFullYear(), m = n.getMonth(), f = (mm, d) => new Date(Date.UTC(y, mm, d)).toISOString().slice(0, 10);
@@ -141,13 +141,17 @@ function fbar(hist) {
 ${sel('Tipo', 't', types)}${sel('Categoría', 'c', all)}${sel('Persona', 'w', cfg.people)}${sel('Cuenta', 'acc', accs.map(a => ({ v: a.id, l: a.name })))}</div>
 ${activeFilters() ? `<button class="link" style="margin-top:6px" onclick="F={q:F.q,open:F.open,showDel:F.showDel};render()">Quitar filtros</button>` : ''}`;
 }
-function dlgShow() { if (!dlg.open) dlg.showModal(); }
+function dlgShow() { if (!dlg.open) { dlg.showModal(); if (!dlgEntry) { history.pushState({ ...(history.state || {}), dlg: 1 }, ''); dlgEntry = true; } } const f = document.activeElement; if (f && f.closest && f.closest('#dlg .segc, #dlg .sheethd')) f.blur(); } // sin anillo de foco en las pestañas al abrir
+// Tocar fuera de la hoja la cierra (como en las apps del teléfono)
+dlg.addEventListener('click', e => { if (e.target != dlg) return; const r = dlg.getBoundingClientRect(); if (e.clientY < r.top || e.clientY > r.bottom || e.clientX < r.left || e.clientX > r.right) dlg.close(); });
 
 function eyeBtn() { return `<button class="iconbtn" aria-label="${HIDE ? 'Mostrar montos' : 'Ocultar montos'}" title="${HIDE ? 'Mostrar montos' : 'Ocultar montos'}" onclick="toggleHide()"><i class="icon-${HIDE ? 'eye-off' : 'eye'}"></i></button>`; }
 function toggleHide() { HIDE = !HIDE; try { localStorage.setItem('fin_hide', HIDE ? '1' : '0'); } catch (e) { } render(); }
 function head(title, back) {
   return `${back ? `<button class="back" onclick="go('more')"><i class="icon-chevron-left"></i> Más</button>` : ''}<div class="top"><h1>${title}</h1><div class="tools">${syncBadge()}${eyeBtn()}</div></div>`;
 }
+// Selector de mes compacto (‹ Octubre 2026 ›)
+const monthNav = (ym, v) => `<div class="mnav"><button class="iconbtn" aria-label="Mes anterior" onclick="${v}=addMonths(${v},-1);render()"><i class="icon-chevron-left"></i></button><b>${ymLabel(ym)}</b><button class="iconbtn" aria-label="Mes siguiente" onclick="${v}=addMonths(${v},1);render()"><i class="icon-chevron-right"></i></button></div>`;
 
 function render() {
   const active = UNDER_MORE.includes(tab) ? 'more' : tab;
@@ -158,7 +162,8 @@ function render() {
   const app = $('app');
   try {
     document.documentElement.classList.toggle('wiz', tab == 'welcome');
-    ({ home: renderHome, hist: renderHist, acc: renderAcc, bud: renderBud, more: renderMore, rep: renderRep, rec: renderRec, goal: renderGoal, set: renderSet, shared: renderShared, plan: renderPlan, trash: renderTrash, welcome: renderWelcome }[tab] || renderHome)(app);
+    ({ home: renderHome, hist: renderHist, acc: renderAcc, bud: renderBud, more: renderMore, rep: renderRep, rec: renderRec, goal: renderGoal, set: renderSet, shared: renderShared, plan: renderPlan, trash: renderTrash, welcome: renderWelcome, debts: renderDebts, tools: renderTools }[tab] || renderHome)(app);
+    syncHistory();
   } catch (e) {
     // Si una pantalla falla, se muestra el error en vez de dejar todo en blanco; el menú sigue funcionando
     console.error(e);
@@ -184,3 +189,68 @@ function applyTheme() {
   const m = document.querySelector('meta[name=theme-color]'); if (m) setTimeout(() => m.content = getComputedStyle(document.body).backgroundColor, 0);
 }
 function setTheme(t) { theme = t; try { localStorage.setItem('fin_theme', t); } catch (e) { } applyTheme(); render(); }
+
+// ============ botón Atrás del teléfono y hojas que se deslizan ============
+// Cada pantalla (y cada subpantalla de Ajustes y Herramientas) es una entrada del historial: Atrás vuelve a la anterior.
+// Una hoja abierta también: Atrás la cierra sin salir de la app. En Inicio, Atrás cierra la app como siempre.
+let dlgEntry = false, ignorePop = 0;
+const navKey = () => tab + '|' + (tab == 'set' ? setSub : '') + '|' + (tab == 'tools' ? toolView : '');
+function syncHistory() {
+  const st = history.state || {}, k = navKey();
+  if (st.k == k) return;
+  const s = { k, tab, setSub: tab == 'set' ? setSub : '', toolView: tab == 'tools' ? toolView : '' };
+  if (!st.k || st.dlg || st.ask) { history.replaceState(s, ''); dlgEntry = false; } else history.pushState(s, '');
+}
+addEventListener('popstate', e => {
+  if (ignorePop > 0) { ignorePop--; return; }
+  const ak = $('ask');
+  if (ak.open) { ak.close(); return; }
+  if (dlg.open) { dlgEntry = false; dlg.close(); return; }
+  const s = e.state || {}; if (!s.k) return;
+  tab = s.tab || 'home'; if (tab == 'set') setSub = s.setSub || ''; if (tab == 'tools') toolView = s.toolView || '';
+  render(); scrollTo(0, 0);
+});
+// Al cerrar la hoja con un botón, se quita su entrada del historial (si no se abrió otra enseguida)
+dlg.addEventListener('close', () => setTimeout(() => {
+  dlg.style.animation = '';
+  if (dlg.open || !dlgEntry) return; dlgEntry = false;
+  if (history.state && history.state.dlg) { ignorePop++; history.back(); }
+}, 0));
+// Deslizar la hoja hacia abajo (desde la línea de arriba, o desde cualquier parte si no hay nada que desplazar) la cierra
+(function sheetDrag() {
+  let y0 = null, x0 = 0, dy = 0, t0 = 0, on = false;
+  const small = () => matchMedia('(max-width: 640px)').matches;
+  const scrolled = el => { for (; el && el != dlg; el = el.parentElement) if (el.scrollTop > 0) return true; return dlg.scrollTop > 0; };
+  dlg.addEventListener('touchstart', e => {
+    y0 = null; if (!small() || e.touches.length != 1) return;
+    const r = dlg.getBoundingClientRect(), t = e.touches[0], onHandle = t.clientY - r.top < 52;
+    if (!onHandle && scrolled(e.target)) return;
+    y0 = t.clientY; x0 = t.clientX; dy = 0; t0 = Date.now(); on = false;
+  }, { passive: true });
+  dlg.addEventListener('touchmove', e => {
+    if (y0 == null) return;
+    const t = e.touches[0], d = t.clientY - y0, dx = t.clientX - x0;
+    if (!on) {
+      if (d > 8 && d > Math.abs(dx) * 1.2) { on = true; dlg.style.transition = 'none'; dlg.style.animation = 'none'; }
+      else { if (d < -4 || Math.abs(dx) > 10) y0 = null; return; }
+    }
+    dy = Math.max(0, d); dlg.style.transform = `translateY(${dy}px)`; e.preventDefault(); // también evita que la app se recargue al jalar
+  }, { passive: false });
+  const end = () => {
+    if (y0 == null) return; y0 = null; if (!on) return; on = false;
+    const fast = dy / Math.max(1, Date.now() - t0) > 0.6;
+    dlg.style.transition = 'transform .2s ease-out';
+    if (dy > Math.min(140, dlg.offsetHeight * 0.28) || (fast && dy > 30)) { dlg.style.transform = 'translateY(105%)'; setTimeout(() => { dlg.close(); dlg.style.transform = dlg.style.transition = dlg.style.animation = ''; }, 190); }
+    else { dlg.style.transform = ''; setTimeout(() => { dlg.style.transition = ''; }, 220); }
+  };
+  dlg.addEventListener('touchend', end); dlg.addEventListener('touchcancel', end);
+})();
+
+// Celebración al cumplir una meta (se salta con “Reducir movimiento” o con los íconos quietos)
+function confetti() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || (typeof iconMotion != 'undefined' && iconMotion == 'off')) return;
+  const box = document.createElement('div'); box.className = 'confetti'; box.setAttribute('aria-hidden', 'true');
+  const cols = ['var(--brand)', 'var(--pink)', 'var(--yellow)', 'var(--teal)', 'var(--blue)', 'var(--in)'];
+  box.innerHTML = [...Array(36)].map((_, i) => `<i style="--x:${Math.round(Math.random() * 100)}vw;--dx:${Math.round(Math.random() * 160 - 80)}px;--r:${Math.round(Math.random() * 720 - 360)}deg;--d:${(Math.random() * 0.35).toFixed(2)}s;--t:${(1.3 + Math.random() * 0.9).toFixed(2)}s;background:${cols[i % cols.length]}"></i>`).join('');
+  document.body.appendChild(box); setTimeout(() => box.remove(), 2600);
+}

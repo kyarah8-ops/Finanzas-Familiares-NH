@@ -1,12 +1,16 @@
 'use strict';
-(window.__V = window.__V || {})['forms.js'] = '8.0.1';
+(window.__V = window.__V || {})['forms.js'] = '10.1.0';
 /* Mis finanzas — formularios y diálogos. */
 const accOpt = (a, s, d) => `<option value="${a.id}"${a.id == s ? ' selected' : ''}>${esc(a.name)} (${a.currency}) · ${money(acctBalance(a, d), a.currency)}${earm(a) > 0 ? ' · libre ' + money(freeBal(a, d), a.currency) : ''}</option>`;
-function mvTabs(c) { return `<div class="seg sm">${[['m', 'Ingreso / Egreso', 'openForm()'], ['t', 'Transferir', 'goTr()'], ['g', 'Metas', 'openContribForm()']].map(([k, l, fn]) => `<button type="button" class="${c == k ? 'on' : ''}" onclick="${fn}">${l}</button>`).join('')}</div>`; }
+// Un solo control para el tipo: Egreso · Ingreso · Transferir · Meta
+function mvTabs(c) {
+  const go = k => k == 'e' || k == 'i' ? (c == 'e' || c == 'i' ? `sk('t','${k}')` : `openForm(null,'${k}')`) : k == 't' ? 'goTr()' : 'openContribForm()';
+  return `<div class="segc" role="tablist">${[['e', 'Egreso'], ['i', 'Ingreso'], ['t', 'Transferir'], ['g', 'Meta']].map(([k, l]) => `<button type="button" role="tab" aria-selected="${c == k}" class="${k}${c == k ? ' on' : ''}" onclick="${go(k)}">${l}</button>`).join('')}</div>`;
+}
 const footer = (id, delFn, extra = '') => `<div class="seg"><button type="button" onclick="dlg.close()">Cancelar</button><button class="p">Guardar</button></div>${id ? `<div class="seg sm">${extra}<button type="button" class="d" onclick="${delFn}"><i class="icon-trash-2"></i> Borrar</button></div>` : ''}`;
 // Saldo insuficiente: avisa, pero deja guardar (por si olvidaste anotar un ingreso)
 async function enoughOrAsk(acc, amount, date, exceptId) {
-  if (!acc || isCard(acc)) return true;
+  if (!acc || isDebtAcc(acc)) return true;
   const av = exceptId ? without(exceptId, () => freeBal(acc, date)) : freeBal(acc, date);
   if (amount <= av + 0.005) return true;
   return ask(`En “${acc.name}” quedan ${money(av, acc.currency)} libres${earm(acc) > 0 ? ' (el resto está reservado para metas)' : ''}. Si guardas, la cuenta quedará en negativo.\n\nSi el saldo real es mayor, corrígelo luego con “Ajustar saldo”.`, { title: 'Saldo insuficiente', ok: 'Guardar igual' });
@@ -15,13 +19,13 @@ const beforeOpen = (acc, d) => acc && acc.openDate && d < acc.openDate ? fail(`L
 
 // ============ ingreso / egreso (formulario rápido) ============
 let fm = {};
-function openForm(id) {
+function openForm(id, t) {
   if (!accs.length) { dlg.innerHTML = `<h2>Primero crea una cuenta</h2><p class="mut">Todo movimiento pertenece a una cuenta (efectivo, banco, tarjeta…).</p><div class="seg"><button type="button" onclick="dlg.close()">Cerrar</button><button class="p" onclick="dlg.close();go('acc');openAccForm()">Crear cuenta</button></div>`; return dlgShow(); }
   const x = txs.find(t => t.id == id) || {}, L = lastUsed();
   let accId = x.accId || (!x.id && accs.some(a => a.id == L.accId) ? L.accId : '');
   if (accId && !accs.some(a => a.id == accId)) accId = '';
   if (!accId) accId = accs[0].id;
-  fm = { id: x.id, t: x.t || 'e', d: x.d || today(), a: x.a || '', cu: x.cu || (!x.id && L.cu) || 'DOP', r: x.r || '', aa: x.aa ?? '', c: x.c, sub: x.sub || '', w: x.w || defaultWho(), accId, n: x.n || '', split: x.split || '', cr: x.cr, rec: x.rec, byName: x.byName, accWasMissing: !!(x.accId && x.accId != accId) };
+  fm = { id: x.id, t: x.t || (t == 'i' ? 'i' : 'e'), d: x.d || today(), a: x.a || '', cu: x.cu || (!x.id && L.cu) || 'DOP', r: x.r || '', aa: x.aa ?? '', c: x.c, sub: x.sub || '', w: x.w || defaultWho(), accId, n: x.n || '', split: x.split || '', cr: x.cr, rec: x.rec, byName: x.byName, accWasMissing: !!(x.accId && x.accId != accId), tags: x.tags || [], grp: x.grp, cTouched: !!x.id, rev: x.rev, c0: x.c };
   if (fm.cu != 'DOP' && !fm.r) fm.r = rateOf(fm.cu, fm.d) || '';
   drawForm(); dlgShow();
   if (!fm.id) setTimeout(() => { const el = $('amt'); if (el) el.focus(); }, 60);
@@ -33,33 +37,42 @@ function drawForm() {
   const extra = f.c && !names.includes(f.c) ? [{ n: f.c, icon: 'tag' }] : [];
   const ppl = [...new Set([...cfg.people, f.w].filter(Boolean))], cu = [...new Set(['DOP', f.cu, ...cfg.cur])], subs = (cfg.subs || {})[f.c] || [];
   const ac = needAA(f), ra = ac && rateOf(ac.currency, f.d), est = ac && f.a && ra && (f.cu == 'DOP' || f.r) ? round2(f.a * (f.cu == 'DOP' ? 1 : f.r) / ra) : '';
-  dlg.innerHTML = `<form onsubmit="return sv(event)"><h2>${f.id ? 'Editar' : 'Nuevo'} movimiento</h2>${f.id ? '' : mvTabs('m')}
+  dlg.innerHTML = `<form onsubmit="return sv(event)"><h2>${f.id ? 'Editar movimiento' : 'Nuevo movimiento'}${f.rev ? ' <span class="revtag">por revisar</span>' : ''}</h2>
+${f.id ? `<div class="segc"><button type="button" class="e${f.t == 'e' ? ' on' : ''}" onclick="sk('t','e')">Egreso</button><button type="button" class="i${f.t == 'i' ? ' on' : ''}" onclick="sk('t','i')">Ingreso</button></div>` : mvTabs(f.t)}
 ${f.accWasMissing ? '<p class="note">La cuenta original ya no existe. Elige otra abajo.</p>' : ''}
-<div class="seg"><button type="button" class="e${f.t == 'e' ? ' on' : ''}" onclick="sk('t','e')">Egreso</button><button type="button" class="i${f.t == 'i' ? ' on' : ''}" onclick="sk('t','i')">Ingreso</button></div>
 <div class="amount"><input id="amt" type="number" inputmode="decimal" step="0.01" min="0.01" required placeholder="0.00" aria-label="Monto" value="${esc(f.a)}" oninput="fm.a=this.value" onchange="if(needAA(fm))drawForm()"><select aria-label="Moneda" onchange="sk('cu',this.value)">${opts(cu, f.cu)}</select></div>
 ${f.cu != 'DOP' ? `<label>Tasa: 1 ${esc(f.cu)} = ? DOP<input type="number" inputmode="decimal" step="0.0001" min="0.0001" required value="${esc(f.r)}" oninput="fm.r=this.value" onchange="if(needAA(fm))drawForm()"></label>` : ''}
 <div class="catgrid" role="listbox" aria-label="Categoría">${[...extra, ...cats].map(c => `<button type="button" class="${c.n == f.c ? 'on' : ''}" data-n="${esc(c.n)}" onclick="sk('c',this.dataset.n)"><i class="icon-${esc(c.icon)}"></i>${esc(c.n)}</button>`).join('')}</div>
 ${subs.length ? `<div class="chips">${['', ...subs].map(s => `<button type="button" class="${(f.sub || '') == s ? 'on' : ''}" data-s="${esc(s)}" onclick="fm.sub=this.dataset.s;drawForm()">${s ? esc(s) : 'Sin detalle'}</button>`).join('')}</div>`
-      : `<input value="${esc(f.sub)}" oninput="fm.sub=this.value" placeholder="Detalle (opcional): pizza, gasolina…" aria-label="Detalle">`}
+      : `<input value="${esc(f.sub)}" oninput="fm.sub=this.value;autoRule()" placeholder="Detalle (opcional): pizza, gasolina…" aria-label="Detalle">`}
+${f.ruleHit ? `<small class="mini" style="margin-top:-4px"><i class="icon-wand-sparkles"></i> Categoría “${esc(f.c)}” por la regla “${esc(f.ruleHit)}”</small>` : ''}
 <div class="two"><label>Fecha<input type="date" required value="${esc(f.d)}" onchange="sk('d',this.value)"></label>
 <label>Cuenta<select onchange="sk('accId',this.value)">${accs.map(a => `<option value="${a.id}"${f.accId == a.id ? ' selected' : ''}>${esc(a.name)}${a.currency != 'DOP' ? ' (' + a.currency + ')' : ''}</option>`).join('')}</select></label></div>
 ${ac ? `<label>Monto que ${f.t == 'e' ? 'sale de' : 'entra a'} la cuenta (${ac.currency})<input type="number" inputmode="decimal" step="0.01" min="0.01" required value="${esc(f.aa)}" placeholder="${est ? '≈ ' + est : ''}" oninput="fm.aa=this.value"></label>${est ? `<button type="button" class="link" style="justify-self:start" onclick="fm.aa='${est}';drawForm()">Usar estimado: ${est}</button>` : ''}` : ''}
 <div><small class="mut">${f.t == 'e' ? 'Quién pagó' : 'Quién'}</small><div class="chips" style="margin-top:4px">${ppl.map(p => `<button type="button" class="${p == f.w ? 'on' : ''}" data-p="${esc(p)}" onclick="fm.w=this.dataset.p;if(fm.split=='for:'+fm.w)fm.split='';drawForm()">${esc(p)}</button>`).join('')}</div></div>
 ${f.t == 'e' && cfg.people.length > 1 ? `<div><small class="mut">¿Para quién?</small><div class="chips" style="margin-top:4px">${[['', 'Personal'], ['half', 'Compartido'], ...cfg.people.filter(p => p != f.w).map(p => ['for:' + p, 'Para ' + p])].map(([v, l]) => `<button type="button" class="${(f.split || '') == v ? 'on' : ''}" data-v="${esc(v)}" onclick="fm.split=this.dataset.v;drawForm()">${esc(l)}</button>`).join('')}</div>${f.split ? `<small class="mini">${f.split == 'half' ? 'Se divide entre ' + cfg.people.length + ': cada quien pone ' + money((+f.a || 0) / cfg.people.length) + '.' : esc(f.split.slice(4)) + ' le deberá el total a ' + esc(f.w) + '.'} Lo ves en Más → Cuentas claras.</small>` : ''}</div>` : ''}
-<input value="${esc(f.n)}" oninput="fm.n=this.value" placeholder="Nota (opcional)" aria-label="Nota">
+<details class="more"${f.n || (f.tags || []).length ? ' open' : ''}><summary>Más opciones ›</summary>
+<input value="${esc(f.n)}" oninput="fm.n=this.value;autoRule()" placeholder="Nota (opcional)" aria-label="Nota">
+<label>Etiquetas (para un viaje, evento…)<input id="tg-in" value="${esc((f.tags || []).join(', '))}" oninput="fm.tags=this.value.split(',').map(tagClean).filter(Boolean)" placeholder="Ej: viaje-samana" list="dl-tags"><datalist id="dl-tags">${allTags().map(t => `<option value="${esc(t)}">`).join('')}</datalist></label>
 ${f.id ? '' : `<button type="button" class="link" style="justify-self:start" onclick="shortcutFromForm()"><i class="icon-zap"></i> Crear un atajo con esto</button>`}
+</details>
 ${footer(f.id, `delTx('${f.id}')`, `<button type="button" onclick="dupTx()"><i class="icon-copy"></i> Duplicar</button>`)}</form>`;
   dlgShow();
 }
 function sk(k, v) {
-  fm[k] = v;
-  if (k == 't') { fm.c = null; fm.sub = ''; fm.split = ''; }
-  if (k == 'c') fm.sub = '';
+  const old = fm[k]; fm[k] = v;
+  if (k == 't') { fm.c = null; fm.sub = ''; fm.split = ''; fm.ruleHit = ''; }
+  if (k == 'c') { if (((cfg.subs || {})[old] || []).includes(fm.sub)) fm.sub = ''; fm.cTouched = true; fm.ruleHit = ''; } // el comercio escrito a mano se queda; la subcategoría de la otra categoría no
   if (k == 'cu' || k == 'accId') fm.aa = '';
   if ((k == 'cu' || k == 'd') && fm.cu != 'DOP') fm.r = rateOf(fm.cu, fm.d) || fm.r;
   drawForm();
 }
-function dupTx() { Object.assign(fm, { id: undefined, d: today(), cr: undefined, rec: undefined, byName: undefined }); drawForm(); toast('Copia lista con fecha de hoy: revisa y guarda.'); }
+// Regla automática: si el detalle o la nota coincide, pone la categoría (mientras no la hayas elegido tú)
+function autoRule() {
+  if (fm.cTouched) return; const r = matchRule((fm.sub || '') + ' ' + (fm.n || ''), fm.t);
+  if (r && (r.c != fm.c || fm.ruleHit != r.m)) { const keep = { sub: fm.sub, n: fm.n }, el = document.activeElement, id = el && el.getAttribute('aria-label'), pos = el && el.selectionStart; fm.c = r.c; fm.ruleHit = r.m; drawForm(); Object.assign(fm, keep); const back = id && dlg.querySelector(`[aria-label="${id}"]`); if (back) { back.focus(); try { back.setSelectionRange(pos, pos); } catch (e) { } } }
+}
+function dupTx() { Object.assign(fm, { id: undefined, d: today(), cr: undefined, rec: undefined, byName: undefined, rev: undefined, c0: undefined }); drawForm(); toast('Copia lista con fecha de hoy: revisa y guarda.'); }
 async function sv(e) {
   e.preventDefault(); const f = fm, a = parseFloat(f.a), r = f.cu == 'DOP' ? 1 : parseFloat(f.r);
   if (!(a > 0)) return fail('Escribe un monto mayor que cero.');
@@ -73,39 +86,76 @@ async function sv(e) {
   else { aa = parseFloat(f.aa); if (!(aa > 0)) return fail(`Escribe cuánto ${f.t == 'e' ? 'salió de' : 'entró a'} la cuenta en ${ac.currency}.`); }
   if (f.t == 'e' && !(await enoughOrAsk(ac, aa, f.d, f.id))) return false;
   const o = { id: f.id, t: f.t, d: f.d, c: f.c, sub: (f.sub || '').trim(), w: f.w, accId: f.accId, a, cu: f.cu, r, v, aa: round2(aa), n: f.n.trim(), cr: f.cr };
+  if ((f.tags || []).length) o.tags = [...new Set(f.tags.map(tagClean).filter(Boolean))]; if (f.grp) o.grp = f.grp;
   if (f.rec) o.rec = f.rec; if (f.byName) o.byName = f.byName;
   if (f.t == 'e' && f.split && f.split != 'for:' + f.w) o.split = f.split;
   rememberLast({ accId: f.accId, cu: f.cu, w: f.w });
-  const isNew = !f.id; saveTx(o); dlg.close(); toast(isNew ? 'Movimiento guardado' : 'Cambios guardados', { kind: 'ok' }); return false;
+  // guardar = revisado (si venía de una importación)
+  const isNew = !f.id; saveTx(o); dlg.close(); toast(isNew ? 'Movimiento guardado' : 'Cambios guardados', { kind: 'ok' });
+  if (!isNew && f.c0 && f.c0 != o.c && o.sub) offerRecat(o, f.c0);
+  return false;
+}
+
+// Cambiaste la categoría de algo con detalle (ej. “UBER”): ofrece cambiar también los demás iguales y crear la regla
+function offerRecat(o, old) {
+  const key = norm(o.sub), same = txs.filter(x => x.id != o.id && x.t == o.t && x.c == old && norm(x.sub) == key);
+  const rule = () => { if (!matchRule(o.sub, o.t)) { const cf = deep(cfg); cf.rules = [...(cf.rules || []), { id: uid(), m: o.sub.trim().toLowerCase().slice(0, 40), t: o.t, c: o.c, sub: '' }]; saveCfg(cf); toast('Regla creada: “' + o.sub + '” → ' + o.c, { kind: 'ok' }); } };
+  if (same.length) toast(`¿Cambiar también ${same.length} más de “${o.sub}” a ${o.c}?`, { action: 'Cambiar', ms: 9000, onAction: () => { bulkTxs(same.map(x => { const { rev, ...y } = x; return { ...y, c: o.c }; })); render(); toast(`${same.length} cambiados`, { kind: 'ok', action: matchRule(o.sub, o.t) ? '' : 'Crear regla', onAction: rule }); } });
+  else if (!matchRule(o.sub, o.t)) toast(`¿Siempre “${o.sub}” → ${o.c}?`, { action: 'Crear regla', ms: 8000, onAction: rule });
 }
 
 // ============ cuentas ============
 let am = {};
-function openAccForm(id) { const x = accs.find(a => a.id == id) || {}; am = { id: x.id, name: x.name || '', type: x.type || cfg.accTypes[0], currency: x.currency || 'DOP', note: x.note || '', openDate: x.openDate || today(), openBalance: x.openBalance ?? '', cutDay: x.cutDay || '', payDay: x.payDay || '' }; drawAccForm(); }
+const LOAN_KINDS = ['Hipoteca', 'Vehículo', 'Personal', 'Estudios', 'Negocio', 'Otro'];
+function openAccForm(id, preset) {
+  const x = { ...(accs.find(a => a.id == id) || {}), ...(preset || {}) }, loan = x.type == 'Préstamo';
+  am = { id: x.id, name: x.name || '', type: x.type || cfg.accTypes[0], currency: x.currency || 'DOP', note: x.note || '', openDate: x.openDate || today(), openBalance: x.openBalance ?? '', cutDay: x.cutDay || '', payDay: x.payDay || '', rate: x.rate ?? '', minPay: x.minPay ?? '', owner: x.owner || '', last4: x.last4 || '',
+    lender: x.lender || '', loanKind: x.loanKind || 'Personal', principal: x.principal ?? '', term: x.term ?? '', payment: x.payment ?? '', firstPay: x.firstPay || '', owedNow: loan && x.openBalance != null ? Math.abs(x.openBalance) : '' };
+  drawAccForm();
+}
 function drawAccForm() {
-  const f = am, cu = [...new Set(['DOP', f.currency, ...cfg.cur])], card = f.type == 'Tarjeta de crédito';
+  const f = am, cu = [...new Set(['DOP', f.currency, ...cfg.cur])], card = f.type == 'Tarjeta de crédito', loan = f.type == 'Préstamo';
+  const types = [...new Set([...cfg.accTypes, 'Préstamo'])];
   const days = (v, k) => `<select onchange="am.${k}=this.value"><option value="">—</option>${[...Array(31)].map((_, i) => `<option value="${i + 1}"${+v == i + 1 ? ' selected' : ''}>${i + 1}</option>`).join('')}</select>`;
-  dlg.innerHTML = `<form onsubmit="return svAcc(event)"><h2>${f.id ? 'Editar' : 'Nueva'} cuenta</h2>
-<label>Nombre<input required value="${esc(f.name)}" oninput="am.name=this.value" placeholder="Ej: Efectivo, BHD Ahorros…"></label>
-<div class="two"><label>Tipo<select onchange="am.type=this.value;drawAccForm()">${opts(cfg.accTypes, f.type)}</select></label>
+  const est = loan && +f.principal > 0 && +f.term > 0 ? pmt(+f.principal, +f.rate || 0, +f.term) : 0;
+  dlg.innerHTML = `<form onsubmit="return svAcc(event)"><h2>${f.id ? (loan ? 'Editar préstamo' : 'Editar cuenta') : (loan ? 'Nuevo préstamo' : 'Nueva cuenta')}</h2>
+<label>Nombre<input required value="${esc(f.name)}" oninput="am.name=this.value" placeholder="${loan ? 'Ej: Hipoteca casa, Préstamo carro' : 'Ej: Efectivo, BHD Ahorros…'}"></label>
+<div class="two"><label>Tipo<select onchange="am.type=this.value;drawAccForm()">${opts(types, f.type)}</select></label>
 <label>Moneda<select onchange="am.currency=this.value">${opts(cu, f.currency)}</select></label></div>
-${card ? `<div class="two"><label>Día de corte${days(f.cutDay, 'cutDay')}</label><label>Día límite de pago${days(f.payDay, 'payDay')}</label></div><p class="mini" style="margin:0">Con estas fechas la app te avisa cuánto pagar y cuándo vence.</p>` : ''}
+${loan ? `<div class="two"><label>¿Con quién? (banco, cooperativa…)<input value="${esc(f.lender)}" oninput="am.lender=this.value" placeholder="Ej: Banco Popular"></label><label>Para qué<select onchange="am.loanKind=this.value">${opts(LOAN_KINDS, f.loanKind)}</select></label></div>
+<div class="two"><label>Monto prestado (original)<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.principal)}" oninput="am.principal=this.value" onchange="drawAccForm()"></label><label>Tasa anual (%)<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.rate)}" oninput="am.rate=this.value" onchange="drawAccForm()" placeholder="Ej: 12.5"></label></div>
+<div class="two"><label>Plazo (meses)<input type="number" inputmode="numeric" step="1" min="1" value="${esc(f.term)}" oninput="am.term=this.value" onchange="drawAccForm()" placeholder="Ej: 60"></label><label>Cuota mensual<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.payment)}" oninput="am.payment=this.value" placeholder="${est ? '≈ ' + est : ''}"></label></div>
+${est && !f.payment ? `<button type="button" class="link" style="justify-self:start" onclick="am.payment='${est}';drawAccForm()">Usar cuota calculada: ${money(est, f.currency)}</button>` : ''}
+<div class="two"><label>Día de pago${days(f.payDay, 'payDay')}</label><label>Primera cuota (opcional)<input type="date" value="${esc(f.firstPay)}" onchange="am.firstPay=this.value"></label></div>
+<div class="two"><label>¿Cuánto debes hoy?<input type="number" inputmode="decimal" step="0.01" min="0" required value="${esc(f.owedNow)}" oninput="am.owedNow=this.value" placeholder="Saldo pendiente"></label><label>Fecha de ese saldo<input type="date" required value="${esc(f.openDate)}" onchange="am.openDate=this.value"></label></div>
+<p class="note">Escribe lo que debes <b>hoy</b> (lo dice el estado de cuenta del banco), no el monto original. Cada vez que pagues una cuota desde la app, la deuda baja sola y la app separa el interés.</p>`
+    : `${card ? `<div class="two"><label>Día de corte${days(f.cutDay, 'cutDay')}</label><label>Día límite de pago${days(f.payDay, 'payDay')}</label></div><p class="mini" style="margin:0">Con estas fechas la app te avisa cuánto pagar y cuándo vence.</p>
+<div class="two"><label>Tasa anual (%) (opcional)<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.rate)}" oninput="am.rate=this.value" placeholder="Ej: 60"></label><label>Pago mínimo (opcional)<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.minPay)}" oninput="am.minPay=this.value"></label></div><p class="mini" style="margin:0">La tasa y el pago mínimo se usan en el plan para salir de deudas.</p>` : ''}
 <div class="two"><label>Saldo inicial<input type="number" inputmode="decimal" step="0.01" required value="${esc(f.openBalance)}" oninput="am.openBalance=this.value"></label>
 <label>Fecha del saldo<input type="date" required value="${esc(f.openDate)}" onchange="am.openDate=this.value"></label></div>
-<p class="note">${card ? 'En tarjetas, si ya debes algo, escribe el saldo en negativo (ej: -15000). ' : ''}${f.id ? 'Para corregir el saldo de hoy sin tocar el historial, usa “Ajustar saldo”.' : ''}</p>
-<input value="${esc(f.note)}" oninput="am.note=this.value" placeholder="Nota (opcional): cuenta conjunta, emergencias…" aria-label="Nota">
+<p class="note">${card ? 'En tarjetas, si ya debes algo, escribe el saldo en negativo (ej: -15000). ' : ''}${f.id ? 'Para corregir el saldo de hoy sin tocar el historial, usa “Ajustar saldo”.' : ''}</p>`}
+${!loan ? `<label>Últimos 4 dígitos (opcional, para leer alertas del banco)<input inputmode="numeric" maxlength="4" pattern="[0-9]{4}" value="${esc(f.last4)}" oninput="am.last4=this.value" placeholder="1234"></label>` : ''}
+${cfg.people.length > 1 ? `<label>¿De quién es?<select onchange="am.owner=this.value"><option value="">Del hogar (de todos)</option>${opts(cfg.people, f.owner)}</select></label>` : ''}
+<input value="${esc(f.note)}" oninput="am.note=this.value" placeholder="Nota (opcional)" aria-label="Nota">
 ${footer(f.id, `delAcc('${f.id}')`)}</form>`;
   dlgShow();
 }
 async function svAcc(e) {
   e.preventDefault(); const f = am; if (!f.name.trim()) return false;
-  const prev = f.id && accs.find(a => a.id == f.id);
-  if (f.id && goals.some(g => g.accId == f.id) && (f.currency != 'DOP' || f.type == 'Tarjeta de crédito')) return fail('Esta cuenta tiene metas atadas: debe seguir siendo una cuenta en pesos y no una tarjeta.');
-  const b = parseFloat(f.openBalance); if (isNaN(b)) return fail('Escribe el saldo inicial (puede ser 0).');
+  const prev = f.id && accs.find(a => a.id == f.id), loan = f.type == 'Préstamo', card = f.type == 'Tarjeta de crédito';
+  if (f.id && goals.some(g => g.accId == f.id) && (f.currency != 'DOP' || card || loan)) return fail('Esta cuenta tiene metas atadas: debe seguir siendo una cuenta en pesos y no una tarjeta ni un préstamo.');
+  let b;
+  if (loan) { const o = parseFloat(f.owedNow); if (!(o >= 0)) return fail('Escribe cuánto debes hoy (puede ser 0).'); b = -o; if (!(+f.payDay >= 1)) return fail('Elige el día de pago de la cuota.'); }
+  else { b = parseFloat(f.openBalance); if (isNaN(b)) return fail('Escribe el saldo inicial (puede ser 0).'); }
   if (prev && prev.currency != f.currency && txs.some(x => x.accId == f.id || x.accIdTo == f.id) && !(await ask(`Esta cuenta ya tiene movimientos en ${prev.currency}. Si cambias a ${f.currency}, los montos viejos se leerán en ${f.currency}.`, { title: '¿Cambiar la moneda?', ok: 'Cambiar' }))) return false;
-  const o = { id: f.id, name: f.name.trim(), type: f.type, currency: f.currency, note: f.note.trim(), openDate: f.openDate, openBalance: b };
-  if (f.type == 'Tarjeta de crédito') { o.cutDay = +f.cutDay || null; o.payDay = +f.payDay || null; }
-  saveAcc(o); dlg.close(); toast('Cuenta guardada', { kind: 'ok' }); return false;
+  const o = { id: f.id, name: f.name.trim(), type: f.type, currency: f.currency, note: f.note.trim(), openDate: f.openDate, openBalance: b, owner: f.owner || '', last4: /^\d{4}$/.test(f.last4 || '') ? f.last4 : '' };
+  if (card) { o.cutDay = +f.cutDay || null; o.payDay = +f.payDay || null; o.rate = parseFloat(f.rate) >= 0 ? parseFloat(f.rate) : null; o.minPay = parseFloat(f.minPay) > 0 ? parseFloat(f.minPay) : null; }
+  if (loan) {
+    const est = +f.principal > 0 && +f.term > 0 ? pmt(+f.principal, +f.rate || 0, +f.term) : 0;
+    Object.assign(o, { lender: f.lender.trim(), loanKind: f.loanKind, principal: parseFloat(f.principal) > 0 ? parseFloat(f.principal) : Math.abs(b), rate: parseFloat(f.rate) >= 0 ? parseFloat(f.rate) : 0, term: parseInt(f.term) > 0 ? parseInt(f.term) : null, payment: parseFloat(f.payment) > 0 ? parseFloat(f.payment) : est || null, payDay: +f.payDay, firstPay: f.firstPay || '' });
+    if (!o.payment) return fail('Escribe la cuota mensual (o el plazo y la tasa para calcularla).');
+  }
+  saveAcc(o); dlg.close(); toast(loan ? 'Préstamo guardado' : 'Cuenta guardada', { kind: 'ok' }); return false;
 }
 let gm = {};
 function openAdj(accId) { const a = accs.find(x => x.id == accId); gm = { accId, date: today(), balance: acctBalance(a), note: '' }; drawAdj(a); }
@@ -136,7 +186,7 @@ function openTransferForm(id, toId, amount) {
   const x = id && txs.find(t => t.id == id);
   if (x) trform = { id: x.id, date: x.d, from: x.accId, to: x.accIdTo, amount: x.a, amountTo: x.aTo, note: x.n || '', cr: x.cr, rec: x.rec };
   else {
-    const to = toId || accs[1].id, from = (accs.find(a => a.id != to && !isCard(a)) || accs.find(a => a.id != to)).id;
+    const to = toId || accs[1].id, from = (accs.find(a => a.id != to && !isDebtAcc(a)) || accs.find(a => a.id != to)).id;
     trform = { date: today(), from, to, amount: amount || '', amountTo: '', note: toId ? 'Pago de tarjeta' : '' };
   }
   drawTransferForm();
@@ -195,7 +245,7 @@ function openRecForm(id, preset) {
   if (!accs.length) return fail('Primero crea una cuenta.');
   const x = { ...(recs.find(r => r.id == id) || {}), ...(preset || {}) };
   if (preset && preset.goalId && !x.name) { const g = goals.find(q => q.id == preset.goalId); x.name = g ? 'Aporte a ' + g.name : ''; }
-  const fromDefault = (accs.find(a => !isCard(a) && a.currency == 'DOP') || accs[0]).id;
+  const fromDefault = (accs.find(a => !isDebtAcc(a) && a.currency == 'DOP') || accs[0]).id;
   rm2 = { id: x.id, name: x.name || '', t: x.t || 'e', c: x.c, sub: x.sub || '', w: x.w || defaultWho(), accId: x.accId || fromDefault, accIdTo: x.accIdTo || (accs.find(a => a.id != (x.accId || fromDefault)) || {}).id, goalId: x.goalId || (goals[0] && goals[0].id) || '', amount: x.amount || '', currency: x.currency || 'DOP', freq: x.freq || 'mensual', day: x.day ?? (x.freq == 'semanal' ? 1 : Math.min(28, +today().slice(8, 10))), month: x.month || recMonth(x.startDate ? x : { startDate: today() }), cutDay: x.cutDay || '', startDate: x.startDate || today(), active: x.active !== false };
   drawRecForm();
 }
@@ -214,7 +264,7 @@ function drawRecForm() {
 <div class="seg sm">${Object.entries(REC_T).map(([k, l]) => `<button type="button" class="${f.t == k ? 'on' : ''}" onclick="rm2.t='${k}';rm2.c=null;drawRecForm()">${l.replace('Aporte a meta', 'A meta')}</button>`).join('')}</div>
 <label>Nombre<input required value="${esc(f.name)}" oninput="rm2.name=this.value" placeholder="${f.t == 'g' ? 'Ej: Ahorro quincenal' : f.t == 'tr' ? 'Ej: Pago de tarjeta' : 'Ej: Luz, Internet, Salario…'}"></label>
 ${money_t ? `<label>Categoría<select onchange="rm2.c=this.value">${opts(cfg.cats.filter(c => c.t == f.t).map(c => c.n), f.c)}</select></label>` : ''}
-${f.t == 'g' ? (goals.length ? `<label>Meta<select onchange="rm2.goalId=this.value">${goals.map(g => `<option value="${g.id}"${g.id == f.goalId ? ' selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>` : '<p class="note">Primero crea una meta en Más → Metas.</p>') : ''}
+${f.t == 'g' ? (goals.some(g => !g.done || g.id == f.goalId) ? `<label>Meta<select onchange="rm2.goalId=this.value">${goals.filter(g => !g.done || g.id == f.goalId).map(g => `<option value="${g.id}"${g.id == f.goalId ? ' selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label>` : '<p class="note">Primero crea una meta en Más → Metas.</p>') : ''}
 <label>${f.t == 'g' || f.t == 'tr' ? 'Desde la cuenta' : 'Cuenta'}<select onchange="rm2.accId=this.value;drawRecForm()">${accs.map(a => `<option value="${a.id}"${f.accId == a.id ? ' selected' : ''}>${esc(a.name)} (${a.currency})</option>`).join('')}</select></label>
 ${f.t == 'tr' ? `<label>Hacia la cuenta<select onchange="rm2.accIdTo=this.value">${accs.filter(a => a.id != f.accId).map(a => `<option value="${a.id}"${f.accIdTo == a.id ? ' selected' : ''}>${esc(a.name)} (${a.currency})</option>`).join('')}</select></label>` : ''}
 <div class="two"><label>Monto<input type="number" inputmode="decimal" step="0.01" min="0.01" required value="${esc(f.amount)}" oninput="rm2.amount=this.value"></label>
@@ -315,45 +365,98 @@ function reassignContrib(id, goalId) {
   saveTx({ ...x, goalId, home: g.accId }); toast('Aporte reasignado', { kind: 'ok' });
 }
 let gform = {};
-function openGoalForm(id) { const x = goals.find(g => g.id == id) || {}; gform = { id: x.id, name: x.name || '', target: x.target || '', accId: x.accId || '', note: x.note || '' }; drawGoalForm(); }
+function openGoalForm(id, focus) {
+  const x = goals.find(g => g.id == id) || {}, pl = x.id ? goalPlan(x) : null, td = today();
+  gform = { id: x.id, name: x.name || '', target: x.target || '', accId: x.accId || '', note: x.note || '', due: x.due || '', done: x.done || '',
+    freq: pl ? pl.freq : '', amount: pl ? pl.amount : '', day: pl && pl.day != null ? pl.day : '', remind: !!(pl && pl.rec), recId: pl && pl.rec ? pl.rec.id : null, focus };
+  drawGoalForm();
+}
+// Fechas de ejemplo y cálculo del plan mientras lo escribes
+function goalPlanPreview(f) {
+  if (!PLAN_FREQ[f.freq]) return '';
+  const fc = goalForecast({ id: f.id || '_nueva', target: +f.target || 0, due: f.due }, { freq: f.freq, amount: +f.amount > 0 ? +f.amount : 1, day: planDay(f) }); // sin monto, igual calcula lo necesario para la fecha
+  if (fc.reached) return '<p class="mini" style="margin:0">Esta meta ya está completa.</p>';
+  const u = PLAN_FREQ[f.freq].u;
+  let h = '';
+  if (+f.amount > 0 && fc.date) h += `<p class="note" style="margin:0">Con <b>${money(+f.amount)}</b> ${PLAN_FREQ[f.freq].l} llegas alrededor del <b>${fdate(fc.date, 1)}</b> (${fc.n} aporte${fc.n == 1 ? '' : 's'}).</p>`;
+  if (f.due && fc.need) h += `<p class="mini" style="margin:0">Para llegar el ${fdate(f.due, 1)} necesitas <b>${money(fc.need)}</b> cada ${u}. <button type="button" class="link" style="display:inline;padding:0 4px;min-height:0" onclick="gform.amount='${Math.ceil(fc.need)}';drawGoalForm()">Usar ${money(Math.ceil(fc.need))}</button></p>`;
+  return h;
+}
+const planDay = f => f.freq == 'semanal' ? (f.day !== '' && f.day != null ? +f.day : new Date(today() + 'T12:00:00').getDay()) : f.freq == 'mensual' ? (f.day || +today().slice(8, 10) > 28 ? (f.day || 'ultimo') : +today().slice(8, 10)) : 1;
 function drawGoalForm() {
-  const f = gform, ok = accs.filter(a => !isCard(a) && a.currency == 'DOP');
-  dlg.innerHTML = `<form onsubmit="return svGoal(event)"><h2>${f.id ? 'Editar' : 'Nueva'} meta</h2>
+  const f = gform, ok = accs.filter(a => !isDebtAcc(a) && a.currency == 'DOP'), dy = planDay(f);
+  const dayField = f.freq == 'semanal' ? `<label>Día<select onchange="gform.day=this.value;drawGoalForm()">${WEEKDAYS.map((w, i) => `<option value="${i}"${dy == i ? ' selected' : ''}>${w}</option>`).join('')}</select></label>`
+    : f.freq == 'mensual' ? `<label>Día del mes<select onchange="gform.day=this.value;drawGoalForm()"><option value="ultimo"${dy == 'ultimo' ? ' selected' : ''}>Último día</option>${[...Array(28)].map((_, i) => `<option value="${i + 1}"${dy == i + 1 ? ' selected' : ''}>${i + 1}</option>`).join('')}</select></label>` : '';
+  dlg.innerHTML = `<form onsubmit="return svGoal(event)"><h2>${f.id ? 'Editar meta' : 'Nueva meta'}${f.done ? ' ' + pill('Cumplida', 'in') : ''}</h2>
 <label>Nombre<input required value="${esc(f.name)}" oninput="gform.name=this.value" placeholder="Ej: Fondo de emergencia, Viaje…"></label>
-<label>Monto objetivo (DOP)<input type="number" inputmode="decimal" step="0.01" min="0.01" required value="${esc(f.target)}" oninput="gform.target=this.value"></label>
-${ok.length ? `<label>Cuenta donde está este ahorro<select required onchange="gform.accId=this.value"><option value="" disabled${ok.some(a => a.id == f.accId) ? '' : ' selected'}>Elige una cuenta…</option>${ok.map(a => `<option value="${a.id}"${f.accId == a.id ? ' selected' : ''}>${esc(a.name)} · ${money(acctBalance(a), a.currency)}</option>`).join('')}</select></label><p class="mini" style="margin:0">Varias metas pueden compartir una cuenta; cada una lleva su avance.</p>`
+<div class="two"><label>Monto objetivo (DOP)<input type="number" inputmode="decimal" step="0.01" min="0.01" required value="${esc(f.target)}" oninput="gform.target=this.value" onchange="drawGoalForm()"></label>
+<label>Para cuándo (opcional)<input type="date" value="${esc(f.due)}" onchange="gform.due=this.value;drawGoalForm()"></label></div>
+${ok.length ? `<label>Cuenta donde está este ahorro<select required onchange="gform.accId=this.value"><option value="" disabled${ok.some(a => a.id == f.accId) ? '' : ' selected'}>Elige una cuenta…</option>${ok.map(a => `<option value="${a.id}"${f.accId == a.id ? ' selected' : ''}>${esc(a.name)} · ${money(acctBalance(a), a.currency)}</option>`).join('')}</select></label>`
       : `<p class="note">Toda meta va atada a una cuenta en pesos (no tarjetas). Primero agrégala en Cuentas.</p>`}
+<div class="card" id="gf-plan" style="margin:0;padding:12px;box-shadow:none;background:var(--soft);border:0"><h2 style="font-size:14px;margin-bottom:8px"><i class="icon-calendar-days"></i> Plan de aportes</h2>
+<div class="two"><label>¿Cada cuánto?<select onchange="gform.freq=this.value;gform.day='';drawGoalForm()"><option value=""${!f.freq ? ' selected' : ''}>Sin plan</option>${Object.entries(PLAN_FREQ).map(([k, v]) => `<option value="${k}"${f.freq == k ? ' selected' : ''}>${v.l[0].toUpperCase() + v.l.slice(1)}</option>`).join('')}</select></label>
+<label>¿Cuánto cada vez?<input type="number" inputmode="decimal" step="0.01" min="0" value="${esc(f.amount)}" oninput="gform.amount=this.value" onchange="drawGoalForm()" ${f.freq ? '' : 'disabled'} placeholder="${f.freq ? 'Ej: 2000' : '—'}"></label></div>
+${dayField ? `<div style="margin-top:8px">${dayField}</div>` : ''}
+<div style="display:grid;gap:6px;margin-top:8px">${goalPlanPreview(f)}</div>
+${f.freq ? `<label class="toggle" style="margin-top:8px"><input type="checkbox" ${f.remind ? 'checked' : ''} onchange="gform.remind=this.checked"> Recordarme cada aporte (sale en Pendientes para confirmarlo)</label>` : '<p class="mini" style="margin:6px 0 0">Con un plan, la app te dice cuándo la cumples y si vas a tiempo.</p>'}</div>
 <input value="${esc(f.note)}" oninput="gform.note=this.value" placeholder="Nota (opcional)" aria-label="Nota">
+${f.id ? `<div class="seg sm">${f.done ? `<button type="button" onclick="reopenGoal('${f.id}')"><i class="icon-rotate-ccw"></i> Reactivar</button>` : `<button type="button" onclick="completeGoal('${f.id}','reached')"><i class="icon-party-popper"></i> Cumplida</button><button type="button" onclick="completeGoal('${f.id}','closed')"><i class="icon-archive"></i> Ya no la necesito</button>`}</div>` : ''}
 ${footer(f.id, `delGoal('${f.id}')`)}</form>`;
   dlgShow();
+  if (f.focus == 'plan') { f.focus = ''; setTimeout(() => { const el = $('gf-plan'); if (el) el.scrollIntoView({ block: 'center' }); }, 80); }
 }
 async function svGoal(e) {
-  e.preventDefault(); const f = gform, t = parseFloat(f.target);
+  e.preventDefault(); const f = gform, t = parseFloat(f.target), amt = parseFloat(f.amount);
   if (!(t > 0)) return fail('Escribe un monto objetivo mayor que cero.');
-  const na = accs.find(a => a.id == f.accId && !isCard(a) && a.currency == 'DOP');
+  const na = accs.find(a => a.id == f.accId && !isDebtAcc(a) && a.currency == 'DOP');
   if (!na) return fail('Elige la cuenta donde está este ahorro.');
+  if (f.freq && !(amt > 0)) return fail('Escribe cuánto vas a aportar cada vez (o elige “Sin plan”).');
   const prev = f.id && goals.find(g => g.id == f.id);
   if (prev && (prev.accId || '') != (f.accId || '')) {
     const sv = goalProgress(prev).saved;
-    if (sv > 0) {
+    if (sv > 0 && !prev.done) {
       if (freeBal(na) < sv - 0.005) return fail(`“${na.name}” no tiene saldo libre para los ${money(sv)} de esta meta.`);
       if (!(await ask(`Los ${money(sv)} ahorrados pasarán a contarse dentro de “${na.name}” y saldrán de la cuenta anterior.`, { title: '¿Cambiar de cuenta?', ok: 'Cambiar' }))) return false;
     }
   }
-  saveGoal({ id: f.id, name: f.name.trim(), target: t, accId: f.accId, note: f.note.trim() }); dlg.close(); toast('Meta guardada', { kind: 'ok' }); return false;
+  const id = f.id || uid(), plan = f.freq ? { freq: f.freq, amount: round2(amt), day: planDay(f) } : null;
+  saveGoal({ id, name: f.name.trim(), target: t, accId: f.accId, note: f.note.trim(), due: f.due || '', plan });
+  // aporte automático (Recurrentes) al día con el plan
+  const r = f.recId && recs.find(x => x.id == f.recId);
+  if (plan && f.remind) saveRec({ ...(r || {}), id: r ? r.id : undefined, name: r ? r.name : 'Aporte a ' + f.name.trim(), t: 'g', goalId: id, accId: (r && accs.some(a => a.id == r.accId)) ? r.accId : f.accId, amount: plan.amount, currency: 'DOP', freq: plan.freq, day: plan.day, startDate: r ? r.startDate : today(), active: true, w: (r && r.w) || defaultWho() }, { noRender: true });
+  else if (r && (!plan || !f.remind)) saveRec({ ...r, active: false }, { noRender: true });
+  dlg.close(); render(); toast(f.id ? 'Meta guardada' : 'Meta creada', { kind: 'ok' }); return false;
+}
+// Cumplida (la lograste) o cerrada (ya no la necesitas): deja de contar como activa y libera lo apartado
+async function completeGoal(id, how) {
+  const g = goals.find(x => x.id == id); if (!g) return;
+  const p = goalProgress(g), acc = accs.find(a => a.id == g.accId), rr = recs.filter(r => r.t == 'g' && r.goalId == id && r.active !== false);
+  const ok = await ask((how == 'reached' ? `“${g.name}” pasa a tus metas cumplidas y deja de contar como activa.` : `“${g.name}” se cierra y deja de contar como activa.`)
+    + (p.saved > 0 ? `\n\nLos ${money(p.saved)} apartados quedan libres en “${acc ? acc.name : 'su cuenta'}”. Si ya los gastaste, anota el gasto.` : '')
+    + (rr.length ? `\nSu aporte automático se pausa.` : '') + '\n\nPuedes reactivarla cuando quieras.', { title: how == 'reached' ? '¿Marcar como cumplida?' : '¿Cerrar esta meta?', ok: how == 'reached' ? 'Sí, la cumplí' : 'Cerrar meta' });
+  if (!ok) return;
+  rr.forEach(r => saveRec({ ...r, active: false }, { noRender: true }));
+  saveGoal({ ...g, done: today(), doneHow: how }); if (dlg.open) dlg.close();
+  if (how == 'reached') confetti();
+  toast(how == 'reached' ? '¡Meta cumplida! 🎉' : 'Meta cerrada', { kind: 'ok', ...(p.saved > 0 && acc ? { action: 'Anotar el gasto', ms: 9000, onAction: () => { openForm(); Object.assign(fm, { a: String(p.saved), accId: acc.id, sub: g.name.slice(0, 40) }); drawForm(); } } : {}) });
+}
+async function reopenGoal(id) {
+  const g = goals.find(x => x.id == id); if (!g) return; const p = goalProgress(g), acc = accs.find(a => a.id == g.accId);
+  if (acc && p.saved > 0 && freeBal(acc) < p.saved - 0.005 && !(await ask(`En “${acc.name}” ya no hay ${money(p.saved)} libres para apartar. Si la reactivas, el saldo libre quedará en negativo hasta que corrijas los aportes.`, { title: '¿Reactivar igual?', ok: 'Reactivar' }))) return;
+  saveGoal({ ...g, done: '', doneHow: '' }); if (dlg.open) dlg.close(); toast('Meta reactivada', { kind: 'ok' });
 }
 async function delGoal(id) { if (!(await ask('El dinero ahorrado se queda en la cuenta; solo deja de estar apartado.', { title: '¿Borrar esta meta?', ok: 'Borrar', danger: true }))) return; removeItem('goal', id); dlg.close(); render(); toast('Meta borrada'); }
 let cform = {};
-const tiedAcc = gid => { const g = goals.find(x => x.id == gid); return g && accs.find(a => a.id == g.accId && !isCard(a)); };
+const tiedAcc = gid => { const g = goals.find(x => x.id == gid); return g && accs.find(a => a.id == g.accId && !isDebtAcc(a)); };
 function syncGoalAcc() { const t = tiedAcc(cform.goalId); if (t && !cform.id) cform.accId = t.id; else if (!accs.some(a => a.id == cform.accId)) cform.accId = accs[0].id; }
 function needTie(gid) { if (tiedAcc(gid)) return false; toast('Esta meta no está atada a una cuenta. Elige la cuenta donde está el ahorro.', { kind: 'err' }); openGoalForm(gid); return true; }
 function pickGoal(gid) { cform.goalId = gid; if (needTie(gid)) return; syncGoalAcc(); drawContribForm(); }
 // openContribForm(meta) nuevo; openContribForm(meta, id) edita un aporte o retiro
 function openContribForm(goalId, id) {
-  if (!goals.length) return fail('Primero crea una meta en Más → Metas.');
-  if (!accs.length) return fail('Primero crea una cuenta.');
   const x = id && txs.find(t => t.id == id);
-  const g0 = goals.find(q => q.id == (x ? x.goalId : goalId)) || goals[0];
+  if (!x && !activeGoals().length) return fail(goals.length ? 'Todas tus metas están cumplidas o cerradas. Crea una nueva en Más → Metas.' : 'Primero crea una meta en Más → Metas.');
+  if (!accs.length) return fail('Primero crea una cuenta.');
+  const g0 = goals.find(q => q.id == (x ? x.goalId : goalId) && (x || !q.done)) || activeGoals()[0];
   if (x) cform = { id: x.id, goalId: g0.id, date: x.d, dir: x.v < 0 ? 'out' : 'in', accId: x.accId, amount: Math.abs(x.a), vdop: Math.abs(x.v), w: x.w || defaultWho(), note: x.n || '', cr: x.cr, rec: x.rec };
   else cform = { goalId: g0.id, date: today(), dir: 'in', accId: accs[0].id, amount: '', vdop: '', w: defaultWho(), note: '' };
   if (needTie(g0.id)) return; syncGoalAcc(); drawContribForm();
@@ -362,7 +465,7 @@ function drawContribForm() {
   const f = cform, acc = accs.find(a => a.id == f.accId), fx = acc && acc.currency != 'DOP', h = tiedAcc(f.goalId), other = h && f.accId != h.id;
   dlg.innerHTML = `<form onsubmit="return svContrib(event)"><h2>${f.id ? 'Editar aporte' : 'Nuevo movimiento'}</h2>${f.id ? '' : mvTabs('g')}
 <div class="seg"><button type="button" class="${f.dir == 'in' ? 'on' : ''}" onclick="cform.dir='in';drawContribForm()">Cuenta → Meta</button><button type="button" class="${f.dir == 'out' ? 'on' : ''}" onclick="cform.dir='out';drawContribForm()">Meta → Cuenta</button></div>
-<label>Meta<select onchange="pickGoal(this.value)">${goals.map(g => `<option value="${g.id}"${g.id == f.goalId ? ' selected' : ''}>${esc(g.name)} · ${money(goalProgress(g).saved)}</option>`).join('')}</select></label>
+<label>Meta<select onchange="pickGoal(this.value)">${goals.filter(g => !g.done || g.id == f.goalId).map(g => `<option value="${g.id}"${g.id == f.goalId ? ' selected' : ''}>${esc(g.name)} · ${money(goalProgress(g).saved)}</option>`).join('')}</select></label>
 <label>${f.dir == 'in' ? 'Cuenta de origen' : 'Cuenta destino'}<select onchange="cform.accId=this.value;drawContribForm()">${accs.map(a => accOpt(a, f.accId, f.date)).join('')}</select></label>
 <p class="mini" style="margin:0">${h ? (other ? 'La meta está en “' + esc(h.name) + '”: el dinero se mueve entre las dos cuentas.' : 'El dinero ya está en “' + esc(h.name) + '”; solo se aparta para la meta.') : ''}</p>
 <div class="amount"><input type="number" inputmode="decimal" step="0.01" min="0.01" required placeholder="0.00" aria-label="Monto" value="${esc(f.amount)}" oninput="cform.amount=this.value"><select disabled aria-label="Moneda"><option>${acc ? acc.currency : 'DOP'}</option></select></div>
@@ -519,7 +622,7 @@ async function merge(s, rep) {
   const inc = cleanState(o), wasEmpty = !hasLocalData(), before = new Map(getAllItems().map(x => [x.id, x.u + ':' + (x.del || 0)]));
   if (rep) {
     if (!(await ask(cloudOn() ? 'Se reemplaza lo de este teléfono y se envía a la nube del hogar.' : 'Se reemplaza todo lo de este teléfono.', { title: '¿Reemplazar todo?', ok: 'Reemplazar', danger: true }))) return;
-    if (cloudOn()) window.Cloud.wipeAll(getAllItems().filter(x => !inc.txs.concat(inc.accs, inc.adjs, inc.recs, inc.goals, inc.trash).some(y => y.id == x.id)));
+    if (cloudOn()) window.Cloud.wipeAll(getAllItems().filter(x => !inc.txs.concat(inc.accs, inc.adjs, inc.recs, inc.goals, inc.trash, inc.debts, inc.assets).some(y => y.id == x.id)));
     setState({ ...inc, cfgT: now() }); toast('Respaldo cargado', { kind: 'ok' });
   } else {
     const lu = x => x.u || x.createdAt || 0;
@@ -533,7 +636,8 @@ async function merge(s, rep) {
     dels = d; txs = [...m.values()]; trash = [...tm.values()].filter(x => !(m.has(x.id) && (m.get(x.id).u || 0) > (x.del || 0)));
     const alive = x => !(d[x.id] && d[x.id] >= lu(x));
     accs = mrg(accs, inc.accs).filter(alive); adjs = mrg(adjs, inc.adjs).filter(alive); recs = mrg(recs, inc.recs).filter(alive); goals = mrg(goals, inc.goals).filter(alive);
-    const live = new Set([...accs, ...adjs, ...recs, ...goals].map(x => x.id)); bin = bin.filter(x => !live.has(x.id)); purgeOld();
+    debts = mrg(debts, inc.debts).filter(alive); assets = mrg(assets, inc.assets).filter(alive);
+    const live = new Set([...accs, ...adjs, ...recs, ...goals, ...debts, ...assets].map(x => x.id)); bin = bin.filter(x => !live.has(x.id)); purgeOld();
     cfg = wasEmpty ? inc.cfg : mergeCfg(cfg, inc.cfg, inc.cfgT > cfgT); cfgT = now();
     toast(`Listo: ${a} movimientos nuevos y ${u} actualizados.`, { kind: 'ok', ms: 5000 });
   }
@@ -562,9 +666,9 @@ function cp() {
 function fi(el) { const f = el.files[0]; if (f) f.text().then(t => merge(t, $('rp').checked)); el.value = ''; }
 
 // ============ Excel (la librería se carga solo al usarla) ============
-function loadScript(src) { return new Promise((ok, ko) => { if (document.querySelector(`script[src="${src}"]`)) return ok(); const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = ko; document.head.appendChild(s); }); }
+function loadScript(src) { return new Promise((ok, ko) => { if (document.querySelector(`script[src="${src}"]`)) return ok(); const s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = () => { s.remove(); ko(); }; document.head.appendChild(s); }); }
 async function xl() {
-  const a = fl(); if (!a.length) return fail('No hay ingresos ni egresos para exportar con los filtros del Historial.');
+  const a = fl(); if (!a.length) return fail('No hay ingresos ni egresos para exportar con los filtros de Movimientos.');
   try { if (typeof XLSX == 'undefined') await loadScript('vendor/xlsx.mini.min.js'); } catch (e) { return fail('No se pudo cargar el exportador de Excel. Revisa tu conexión.'); }
   const rows = a.map(x => ({ Fecha: x.d, Tipo: x.t == 'i' ? 'Ingreso' : 'Egreso', Categoría: x.c, Detalle: x.sub || '', Persona: x.w, 'Para quién': splitLabel(x), 'Anotado por': x.byName || '', Cuenta: (accs.find(c => c.id == x.accId) || {}).name || '', Monto: x.a, Moneda: x.cu || 'DOP', Tasa: x.r, 'Monto en DOP': x.v, Nota: x.n || '' }));
   const cat = {}; a.forEach(x => { const k = x.t + '|' + x.c; cat[k] = (cat[k] || 0) + x.v; });
